@@ -98,38 +98,38 @@ class OllamaTextToImage(OllamaBase, TextToImageClientBase):
         Returns:
             bytes: The raw image bytes.
         """
-        image_settings = (
-            OllamaTextToImagePromptExecutionSettings()
-            if settings is None
-            else OllamaTextToImagePromptExecutionSettings.from_prompt_execution_settings(settings)
-        )
+        if settings is None:
+            image_settings = OllamaTextToImagePromptExecutionSettings()
+        elif isinstance(settings, OllamaTextToImagePromptExecutionSettings):
+            image_settings = settings
+        else:
+            image_settings = OllamaTextToImagePromptExecutionSettings.from_prompt_execution_settings(settings)
 
+        request: dict[str, Any] = {**image_settings.prepare_settings_dict(), **kwargs}
+
+        # The deprecated arguments only apply when the settings do not carry a size,
+        # and are applied to the request so that the caller's settings are not mutated.
         if width is not None:
             warn(
                 "The 'width' argument is deprecated. Use 'settings.width' instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            if image_settings.width is None:
-                image_settings.width = width
+            request.setdefault("width", width)
         if height is not None:
             warn(
                 "The 'height' argument is deprecated. Use 'settings.height' instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            if image_settings.height is None:
-                image_settings.height = height
+            request.setdefault("height", height)
 
-        options = image_settings.prepare_settings_dict()
-        options.update(kwargs)
+        # These are controlled by the service and always win over settings and kwargs.
+        request["model"] = self.ai_model_id
+        request["prompt"] = description
+        request["stream"] = False
 
-        response_object = await self.client.generate(
-            model=self.ai_model_id,
-            prompt=description,
-            stream=False,
-            **options,
-        )
+        response_object = await self.client.generate(**request)
 
         image = getattr(response_object, "image", None)
         if image is None and isinstance(response_object, Mapping):

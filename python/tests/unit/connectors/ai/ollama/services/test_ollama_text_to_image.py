@@ -4,6 +4,7 @@ import base64
 from unittest.mock import patch
 
 import pytest
+from ollama import GenerateResponse
 
 from semantic_kernel.connectors.ai.ollama.ollama_prompt_execution_settings import (
     OllamaTextToImagePromptExecutionSettings,
@@ -13,6 +14,11 @@ from semantic_kernel.contents.image_content import ImageContent
 from semantic_kernel.exceptions.service_exceptions import ServiceInitializationError, ServiceInvalidResponseError
 
 ENCODED_IMAGE = base64.b64encode(b"test_image_bytes").decode()
+
+
+def sdk_response(image: str | None = ENCODED_IMAGE) -> GenerateResponse:
+    """Build a response shaped like the one the Ollama SDK actually returns."""
+    return GenerateResponse(model="test_model_id", created_at="2026-01-01T00:00:00Z", done=True, image=image)
 
 
 def test_init_empty_service_id(model_id):
@@ -136,3 +142,68 @@ async def test_generate_image_without_image_in_response(mock_generate, model_id,
     ollama = OllamaTextToImage(ai_model_id=model_id)
     with pytest.raises(ServiceInvalidResponseError):
         await ollama.generate_image(prompt)
+
+
+@patch("ollama.AsyncClient.generate")
+async def test_generate_image_sdk_response(mock_generate, model_id, prompt):
+    """Test decoding against a GenerateResponse, which is what the SDK returns."""
+    mock_generate.return_value = sdk_response()
+
+    ollama = OllamaTextToImage(ai_model_id=model_id)
+    image = await ollama.generate_image(prompt)
+
+    assert image == b"test_image_bytes"
+
+
+@patch("ollama.AsyncClient.generate")
+async def test_generate_image_sdk_response_without_image(mock_generate, model_id, prompt):
+    """Test that a GenerateResponse carrying no image raises."""
+    mock_generate.return_value = sdk_response(image=None)
+
+    ollama = OllamaTextToImage(ai_model_id=model_id)
+    with pytest.raises(ServiceInvalidResponseError):
+        await ollama.generate_image(prompt)
+
+
+@patch("ollama.AsyncClient.generate")
+async def test_generate_image_typed_settings_are_not_repacked(mock_generate, model_id, prompt):
+    """Test that a cleared field on a reused settings object is not restored from extension data."""
+    mock_generate.return_value = sdk_response()
+    settings = OllamaTextToImagePromptExecutionSettings(width=512)
+
+    ollama = OllamaTextToImage(ai_model_id=model_id)
+    await ollama.generate_image(prompt, settings=settings)
+    assert mock_generate.call_args.kwargs["width"] == 512
+
+    settings.width = None
+    await ollama.generate_image(prompt, settings=settings)
+    assert "width" not in mock_generate.call_args.kwargs
+
+
+@patch("ollama.AsyncClient.generate")
+async def test_generate_image_kwargs_do_not_collide_with_request_keys(mock_generate, model_id, prompt):
+    """Test that request-control keys passed as kwargs do not raise TypeError."""
+    mock_generate.return_value = sdk_response()
+
+    ollama = OllamaTextToImage(ai_model_id=model_id)
+    image = await ollama.generate_image(prompt, stream=True, model="other_model")
+
+    assert image == b"test_image_bytes"
+    call_kwargs = mock_generate.call_args.kwargs
+    assert call_kwargs["stream"] is False
+    assert call_kwargs["model"] == model_id
+
+
+@patch("ollama.AsyncClient.generate")
+async def test_generate_image_settings_are_not_mutated(mock_generate, model_id, prompt):
+    """Test that the deprecated size arguments do not mutate the caller's settings object."""
+    mock_generate.return_value = sdk_response()
+    settings = OllamaTextToImagePromptExecutionSettings()
+
+    ollama = OllamaTextToImage(ai_model_id=model_id)
+    with pytest.warns(DeprecationWarning):
+        await ollama.generate_image(prompt, width=512, height=256, settings=settings)
+
+    assert settings.width is None
+    assert settings.height is None
+    assert mock_generate.call_args.kwargs["width"] == 512
